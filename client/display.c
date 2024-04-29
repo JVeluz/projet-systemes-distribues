@@ -24,5 +24,7 @@ int main() {
     }
 
     close(fd);
+    unlink(PIPE_PATH);
+
     return 0;
 }
