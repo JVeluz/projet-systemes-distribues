@@ -1,7 +1,7 @@
 all: main
 
 main: main.c
-	gcc -o main main.c -lpthread
+	gcc -o main.o main.c -lpthread
 
 clean:
-	rm -f main
+	rm -f main.o
