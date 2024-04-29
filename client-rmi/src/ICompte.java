@@ -1,0 +1,9 @@
+import java.rmi.Remote;
+import java.rmi.RemoteException;
+import java.util.Map;
+
+public interface ICompte extends Remote {
+    boolean register(String username, String password) throws RemoteException;
+    boolean login(String username, String password) throws RemoteException;
+    boolean delete(String username, String password)throws RemoteException;
+}
