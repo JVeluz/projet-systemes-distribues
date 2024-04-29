@@ -8,4 +8,4 @@ display: display.c
 	gcc -o display display.c
 
 clean:
-	rm -f main display
+	rm -f main display pipe
