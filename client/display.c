@@ -9,13 +9,7 @@
 #define BUFFER_SIZE 256
 #define PIPE_PATH "./pipe"
 
-volatile bool running = true;
-
-void sigpipe_handler() { running = false; }
-
 int main() {
-    signal(SIGINT, sigpipe_handler);
-
     int fd = open(PIPE_PATH, O_RDONLY);
     if (fd == -1) {
         perror("open");
@@ -23,7 +17,7 @@ int main() {
     }
 
     char buffer[BUFFER_SIZE];
-    while (running) {
+    while (true) {
         read(fd, buffer, sizeof(buffer));
         printf("%s\n", buffer);
 

@@ -22,7 +22,6 @@ typedef struct {
     int id;
     int *sock;
     int *msgid;
-    char *message_queue;
     sem_t *mutex_message_queue;
 } handle_client_args;
 
@@ -35,10 +34,10 @@ void *handle_client(void *arg) {
     int id = args->id;
     int *sock = args->sock;
     int *msgid = args->msgid;
-    char *message_queue = args->message_queue;
     sem_t *mutex_message_queue = args->mutex_message_queue;
 
     char buffer[BUFFER_SIZE];
+    char *message_queue = malloc(BUFFER_SIZE * sizeof(char));
     char *message;
     char *response;
     char n_bytes;
@@ -88,12 +87,12 @@ void *handle_client(void *arg) {
 
     close(*sock);
     free(args);
+    free(message_queue);
 
     printf("client-%d closed properly\n", id);
 }
 
-void communicaiton(int port, int *msgid, char *message_queue,
-                   sem_t *mutex_message_queue) {
+void communicaiton(int port, int *msgid, sem_t *mutex_message_queue) {
     struct sockaddr_in addr_client;
     struct sockaddr_in addr_server;
     int addr_size;
@@ -157,7 +156,6 @@ void communicaiton(int port, int *msgid, char *message_queue,
         args->id = n_clients;
         args->sock = &sock_clients[n_clients];
         args->msgid = msgid;
-        args->message_queue = message_queue;
         args->mutex_message_queue = mutex_message_queue;
         if (pthread_create(&client_threads[n_clients], NULL, handle_client,
                            (void *)args) != 0) {
@@ -188,7 +186,7 @@ void communicaiton(int port, int *msgid, char *message_queue,
     printf("communication closed properly\n");
 }
 
-void gestion_requete(char *ip, int port, int *msgid, char *message_queue) {
+void gestion_requete(char *ip, int port, int *msgid) {
     struct hostent *server_host;
     static struct sockaddr_in addr_server;
     socklen_t addr_size;
@@ -196,6 +194,7 @@ void gestion_requete(char *ip, int port, int *msgid, char *message_queue) {
     int sock;
 
     char buffer[BUFFER_SIZE];
+    char *message_queue = malloc(BUFFER_SIZE * sizeof(char));
     char *message;
     char *response;
     char n_bytes;
@@ -264,6 +263,8 @@ void gestion_requete(char *ip, int port, int *msgid, char *message_queue) {
 
     close(sock);
 
+    free(message_queue);
+
     printf("gestion-requete closed properly\n");
 }
 
@@ -283,20 +284,24 @@ void initialize_message_queue(int *msgid) {
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigpipe_handler);
 
-    if (argc != 4) {
+    if (argc != 5) {
         fprintf(stderr,
-                "Usage: %s <client_rmi_ip> <client_rmi_port> "
-                "<communication_port>\n",
+                "Usage: %s <gestion-compte-ip> <gestion-compte-port> "
+                "<client-rmi-port> <communication-port>\n",
                 argv[0]);
         exit(EXIT_FAILURE);
     }
-    char *client_rmi_ip = argv[1];
-    int client_rmi_port = atoi(argv[2]);
-    int communication_port = atoi(argv[3]);
 
-    system("clear");
+    char *gestion_compte_ip = argv[1];
+    int gestion_compte_port = atoi(argv[2]);
+    char *client_rmi_ip = "localhost";
+    int client_rmi_port = atoi(argv[3]);
+    char *communication_ip = "localhost";
+    int communication_port = atoi(argv[4]);
+
+    printf("%s:%d\tgestion-compte\n", gestion_compte_ip, gestion_compte_port);
     printf("%s:%d\tclient-rmi\n", client_rmi_ip, client_rmi_port);
-    printf("%s:%d\tcommunication\n", "self", communication_port);
+    printf("%s:%d\tcommunication\n", communication_ip, communication_port);
     printf("\n");
 
     // Initialize the semaphore
@@ -304,7 +309,6 @@ int main(int argc, char *argv[]) {
     sem_init(&mutex_message_queue, 0, 1);
 
     // Initialize the file message
-    char *message_queue = malloc(BUFFER_SIZE * sizeof(char));
     int msgid;
     initialize_message_queue(&msgid);
 
@@ -313,8 +317,7 @@ int main(int argc, char *argv[]) {
         perror("fork");
         exit(EXIT_FAILURE);
     } else if (pid_communication == 0) {
-        communicaiton(communication_port, &msgid, message_queue,
-                      &mutex_message_queue);
+        communicaiton(communication_port, &msgid, &mutex_message_queue);
     }
 
     pid_t pid_request = fork();
@@ -322,22 +325,31 @@ int main(int argc, char *argv[]) {
         perror("fork");
         exit(EXIT_FAILURE);
     } else if (pid_request == 0) {
-        gestion_requete(client_rmi_ip, client_rmi_port, &msgid, message_queue);
+        gestion_requete("localhost", client_rmi_port, &msgid);
     }
+
+    // pid_t pid_client_rmi = fork();
+    // if (pid_client_rmi == -1) {
+    //     perror("fork");
+    //     exit(EXIT_FAILURE);
+    // } else if (pid_client_rmi == 0) {
+    //     execlp("java", "java", "-jar", "client-rmi/client-rmi.jar",
+    //            gestion_compte_ip, gestion_compte_ip, client_rmi_port, NULL);
+    // }
 
     while (running)
         ;
 
     // Attendre la fin des processus fils
-    waitpid(pid_communication, NULL, 0);
+    // waitpid(pid_client_rmi, NULL, 0);
     waitpid(pid_request, NULL, 0);
+    waitpid(pid_communication, NULL, 0);
 
     // Supprimer le sémaphore
     sem_destroy(&mutex_message_queue);
 
     // Supprimer la file de messages
     msgctl(msgid, IPC_RMID, NULL);
-    free(message_queue);
 
     exit(EXIT_SUCCESS);
 }

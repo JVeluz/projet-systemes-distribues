@@ -245,6 +245,7 @@ int main(int argc, char *argv[]) {
     main_menu(&pipe_fd, communication_sock, user);
 
     close(pipe_fd);
+    unlink(PIPE_PATH);
     close(communication_sock);
 
     free(user);

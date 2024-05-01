@@ -1,6 +1,6 @@
 SRC_DIR="src"
 BIN_DIR="bin"
-JAR_FILE="Gestion_compte.jar"
+JAR_FILE="gestion-compte.jar"
 MAIN_CLASS="App"
 
 javac -d "$BIN_DIR" "$SRC_DIR"/*.java

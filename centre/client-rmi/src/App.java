@@ -14,22 +14,16 @@ public class App {
     private static int client_rmi_port;
 
     public static void main(String[] args) throws Exception {
-        System.out.print("\033[H\033[2J");
+        if (args.length != 3) {
+            System.err.println(
+                "Usage: java App <gestion-compte-ip> <gestion-compte-port> <client-rmi-port>");
+            System.exit(1);
+        }
 
-        // if (args.length != 3) {
-        //     System.out.println("Usage: java App <gestion_compte_ip>
-        //     <gestion_compte_port> <client_rmi_port>"); System.exit(1);
-        // }
-
-        // App.gestion_compte_ip = args[0];
-        // App.gestion_compte_port = Integer.parseInt(args[1]);
-        // App.client_rmi_ip = Inet4Address.getLocalHost().getHostAddress();
-        // App.client_rmi_port = Integer.parseInt(args[3]);
-
-        App.gestion_compte_ip = "localhost";
-        App.gestion_compte_port = 1099;
-        App.client_rmi_ip = "localhost";
-        App.client_rmi_port = 5000;
+        gestion_compte_ip = args[0];
+        gestion_compte_port = Integer.parseInt(args[1]);
+        client_rmi_ip = "localhost";
+        client_rmi_port = Integer.parseInt(args[2]);
 
         System.out.println(String.format(
             "%s:%d\tgestion-compte", gestion_compte_ip, gestion_compte_port));
@@ -78,10 +72,9 @@ public class App {
             gestionCompte = (ICompte)Naming.lookup(String.format(
                 "rmi://%s:%d/Compte", gestion_compte_ip, gestion_compte_port));
             if (!App.server_rmi_running)
-                System.out.println("gestion-compte is running !");
+                System.out.println("client-rmi:\tconnected to gestion-compte");
             App.server_rmi_running = true;
         } catch (Exception e) {
-            System.err.println("Can not reach gestion-compte...");
             App.server_rmi_running = false;
         }
     }

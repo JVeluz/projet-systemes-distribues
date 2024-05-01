@@ -22,16 +22,13 @@ public class App extends UnicastRemoteObject implements ICompte {
     }
 
     public static void main(String[] args) throws Exception {
-        // if (args.length != 2) {
-        //     System.out.println("Usage: java App <gestion-compte-ip>
-        //     <gestion-compte-port>"); return;
-        // }
+        if (args.length != 1) {
+            System.out.println("Usage: java App <port>");
+            System.exit(1);
+        }
 
-        // gestion_compte_ip = args[0];
-        // gestion_compte_port = Integer.parseInt(args[1]);
-
-        App.gestion_compte_ip = "localhost";
-        App.gestion_compte_port = 1099;
+        gestion_compte_ip = "localhost";
+        gestion_compte_port = Integer.parseInt(args[0]);
 
         App.users = new HashMap<>();
 
@@ -55,11 +52,11 @@ public class App extends UnicastRemoteObject implements ICompte {
         }
 
         load();
-        // System.out.println("Users loaded from file.");
-        // for (Map.Entry<String, String> entry : users.entrySet()) {
-        //     System.out.println(String.format("User: %s, Password: %s",
-        //     entry.getKey(), entry.getValue()));
-        // }
+        System.out.println("Users loaded from file.");
+        for (Map.Entry<String, String> entry : users.entrySet()) {
+            System.out.println(String.format("User: %s, Password: %s",
+                                             entry.getKey(), entry.getValue()));
+        }
 
         try {
             App app = new App();
@@ -79,10 +76,6 @@ public class App extends UnicastRemoteObject implements ICompte {
         if (users.containsKey(username))
             return false;
         users.put(username, password);
-        for (Map.Entry<String, String> entry : users.entrySet()) {
-            System.out.println(String.format("User: %s, Password: %s",
-                                             entry.getKey(), entry.getValue()));
-        }
         save();
         return true;
     }

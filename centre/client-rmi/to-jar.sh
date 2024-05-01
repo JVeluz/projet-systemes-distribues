@@ -1,6 +1,6 @@
 SRC_DIR="src"
 BIN_DIR="bin"
-JAR_FILE="Client_rmi.jar"
+JAR_FILE="client-rmi.jar"
 MAIN_CLASS="App"
 
 javac -d "$BIN_DIR" "$SRC_DIR"/*.java
