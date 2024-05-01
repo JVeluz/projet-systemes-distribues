@@ -1,6 +1,5 @@
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.net.Inet4Address;
 import java.rmi.Naming;
 
 public class App {
@@ -27,9 +26,9 @@ public class App {
         // App.client_rmi_ip = Inet4Address.getLocalHost().getHostAddress();
         // App.client_rmi_port = Integer.parseInt(args[3]);
 
-        App.gestion_compte_ip = "127.0.1.1";
+        App.gestion_compte_ip = "localhost";
         App.gestion_compte_port = 1099;
-        App.client_rmi_ip = Inet4Address.getLocalHost().getHostAddress();
+        App.client_rmi_ip = "localhost";
         App.client_rmi_port = 5000;
 
         System.out.println(String.format(
@@ -79,10 +78,10 @@ public class App {
             gestionCompte = (ICompte)Naming.lookup(String.format(
                 "rmi://%s:%d/Compte", gestion_compte_ip, gestion_compte_port));
             if (!App.server_rmi_running)
-                System.out.println("RMI server is running !");
+                System.out.println("gestion-compte is running !");
             App.server_rmi_running = true;
         } catch (Exception e) {
-            System.err.println("Can not reach RMI server...");
+            System.err.println("Can not reach gestion-compte...");
             App.server_rmi_running = false;
         }
     }

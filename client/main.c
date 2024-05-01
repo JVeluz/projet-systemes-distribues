@@ -58,17 +58,16 @@ bool login_user(int sock, user_t *user) {
 
     char *response = message_server(sock, message);
 
-    if (strcmp(response, "error") == 0) {
-        printf("An error occurred...\n");
-        sleep(3);
-        return false;
-    } else if (strcmp(response, "failed") == 0) {
+    if (strcmp(response, "failed") == 0) {
         printf("Invalid username or password...\n");
         sleep(3);
         return false;
+    } else if (strcmp(response, "success") == 0) {
+        return true;
     }
-
-    return true;
+    printf("An error occurred\n");
+    sleep(3);
+    return false;
 }
 
 bool register_user(int sock, user_t *user) {
@@ -91,17 +90,16 @@ bool register_user(int sock, user_t *user) {
 
     char *response = message_server(sock, message);
 
-    if (strcmp(response, "error") == 0) {
-        printf("An error occurred\n");
+    if (strcmp(response, "failed") == 0) {
+        printf("Username already exists...\n");
         sleep(3);
         return false;
-    } else if (strcmp(response, "failed") == 0) {
-        printf("Username already exists\n");
-        sleep(3);
-        return false;
+    } else if (strcmp(response, "success") == 0) {
+        return true;
     }
-
-    return true;
+    printf("An error occurred\n");
+    sleep(3);
+    return false;
 }
 
 void list_users(int sock) {
@@ -233,7 +231,7 @@ int main(int argc, char *argv[]) {
     int communication_sock;
 
     mkfifo(PIPE_PATH, 0666);
-    system("gnome-terminal -- ./display");
+    system("gnome-terminal -- ./display.o");
     pipe_fd = open(PIPE_PATH, O_WRONLY);
     if (pipe_fd == -1) {
         perror("open");

@@ -1,6 +1,5 @@
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
-import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -36,6 +35,9 @@ public class App extends UnicastRemoteObject implements ICompte {
 
         App.users = new HashMap<>();
 
+        System.setProperty("java.rmi.server.hostname", App.gestion_compte_ip);
+        System.setProperty("java.security.policy", "server.policy");
+
         System.out.print("\033[H\033[2J");
         System.out.println(String.format("%s:%d\tgestion-compte",
                                          App.gestion_compte_ip,
@@ -62,7 +64,9 @@ public class App extends UnicastRemoteObject implements ICompte {
         try {
             App app = new App();
             java.rmi.registry.LocateRegistry.createRegistry(1099);
-            java.rmi.Naming.rebind(String.format("rmi://localhost:1099/Compte"),
+            java.rmi.Naming.rebind(String.format("rmi://%s:%d/Compte",
+                                                 App.gestion_compte_ip,
+                                                 App.gestion_compte_port),
                                    app);
         } catch (Exception e) {
             System.out.println("Server failed: " + e);
