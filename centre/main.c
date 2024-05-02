@@ -11,83 +11,110 @@
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <sys/select.h>
+#include <sys/shm.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #define BUFFER_SIZE 256
+#define MSG_PATH "msg"
+#define SHM_PATH "shm"
+
+typedef struct {
+    char *users[100];
+    unsigned int size;
+} users_list_t;
 
 typedef struct {
     int id;
     int *sock;
-    int *msgid;
-    sem_t *mutex_message_queue;
+    sem_t *mutex_client;
 } handle_client_args;
 
 volatile sig_atomic_t running = 1;
 
+int sock_communication;
+int sock_gestion_requete;
+
 void sigpipe_handler() { running = 0; }
 
-void *broadcast(char *message, int *sock_clients, int n_clients) {
+void broadcast(char *message, int *sock_clients, int n_clients) {
     for (int i = 0; i < n_clients; i++)
         write(sock_clients[i], message, strlen(message) + 1);
+}
+
+int send_to_message_queue(char *message, int *msg_id) {
+    char *message_queue = malloc(BUFFER_SIZE * sizeof(char));
+    strcpy(message_queue, message);
+    if (msgsnd(*msg_id, message_queue, sizeof(message_queue), 0) == -1) {
+        perror("send_to_message_queue:msgsnd");
+        free(message_queue);
+        return -1;
+    }
+    free(message_queue);
+    return 0;
 }
 
 void *handle_client(void *arg) {
     handle_client_args *args = (handle_client_args *)arg;
     int id = args->id;
     int *sock = args->sock;
-    int *msgid = args->msgid;
-    sem_t *mutex_message_queue = args->mutex_message_queue;
+    sem_t *mutex_client = args->mutex_client;
+
+    int msg_id;
 
     char buffer[BUFFER_SIZE];
-    char *message_queue = malloc(BUFFER_SIZE * sizeof(char));
     char *message;
     char *response;
     char n_bytes;
 
-    printf("communication\tclient-%d ready\n", id);
+    // Get the message queue
+    key_t msg_key = ftok(MSG_PATH, 0);
+    if (msg_key == -1) {
+        perror("handle_client:ftok");
+        exit(EXIT_FAILURE);
+    }
+    msg_id = msgget(msg_key, 0);
+    if (msg_id == -1) {
+        perror("handle_client:msgget");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("communication: client-%d connected\n", id);
 
     while (running) {
         // Receive the message from the client
         n_bytes = read(*sock, buffer, BUFFER_SIZE);
-
         // Check if the client is disready
         if (n_bytes == 0) {
-            printf("communication\tclient-%d disready\n", id);
+            printf("communication: client-%d disconnected\n", id);
             break;
         }
-
+        printf("\n");
+        printf("communication: <-- %s client-%d\n", buffer, id);
         message = malloc(n_bytes * sizeof(char));
-        memcpy(message, buffer, n_bytes);
-        printf("communication\t <-- %s client-%d\n", message, id);
-
-        // broadcast(message, sock_clients, n_clients);
+        strcpy(message, buffer);
 
         // Send the message to the message queue
-        sem_wait(mutex_message_queue);
-        strcpy(message_queue, message);
-        if (msgsnd(*msgid, message_queue, sizeof(message_queue), 0) == -1) {
+        sem_wait(mutex_client);
+        if (msgsnd(msg_id, message, sizeof(message), 0) == -1) {
             perror("handle_client:msgsnd");
-            sem_post(mutex_message_queue);
+            sem_post(mutex_client);
             continue;
         }
-
         // Receive the response from the message queue
         response = malloc(BUFFER_SIZE * sizeof(char));
-        if (msgrcv(*msgid, message_queue, sizeof(message_queue), 0, 0) == -1) {
+        if (msgrcv(msg_id, response, sizeof(response), 0, 0) == -1) {
             perror("handle_client:msgrcv");
-            sem_post(mutex_message_queue);
+            sem_post(mutex_client);
             continue;
         }
-        strcpy(response, message_queue);
-        sem_post(mutex_message_queue);
+        sem_post(mutex_client);
 
         // Send the response to the client
+        printf("communication: %s --> client-%d\n", response, id);
         write(*sock, response, strlen(response) + 1);
-        printf("communication\t%s --> client-%d\n", response, id);
-        printf("\n");
 
         free(message);
         free(response);
@@ -95,23 +122,38 @@ void *handle_client(void *arg) {
 
     close(*sock);
     free(args);
-    free(message_queue);
 }
 
-void communicaiton(int port, int *msgid) {
+void communicaiton(int port) {
     struct sockaddr_in addr_client;
     struct sockaddr_in addr_server;
     int addr_size;
 
-    int sock_server;
+    sem_t mutex_client;
+
+    int *sock_clients = NULL;
+    pthread_t *client_threads = NULL;
+
+    int msg_id;
+
+    // Get the message queue
+    key_t msg_key = ftok(MSG_PATH, 0);
+    if (msg_key == -1) {
+        perror("communication:ftok");
+        exit(EXIT_FAILURE);
+    }
+    msg_id = msgget(msg_key, 0);
+    if (msg_id == -1) {
+        perror("communication:msgget");
+        exit(EXIT_FAILURE);
+    }
 
     // Initialize the semaphore
-    sem_t mutex_message_queue;
-    sem_init(&mutex_message_queue, 0, 1);
+    sem_init(&mutex_client, 0, 1);
 
     // Initialize the sockets
-    sock_server = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock_server == -1) {
+    sock_communication = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_communication == -1) {
         perror("communicaiton:socket");
         exit(EXIT_FAILURE);
     }
@@ -123,25 +165,23 @@ void communicaiton(int port, int *msgid) {
     addr_server.sin_port = htons(port);
 
     // Bind the socket to the server address
-    if (bind(sock_server, (struct sockaddr *)&addr_server,
+    if (bind(sock_communication, (struct sockaddr *)&addr_server,
              sizeof(addr_server)) == -1) {
         perror("communicaiton:bind");
-        close(sock_server);
+        close(sock_communication);
         exit(EXIT_FAILURE);
     }
 
     // Listen for incoming connections
-    if (listen(sock_server, 5) == -1) {
+    if (listen(sock_communication, 5) == -1) {
         perror("communicaiton:listen");
-        close(sock_server);
+        close(sock_communication);
         exit(EXIT_FAILURE);
     }
 
     printf("communication: ready\n");
 
     int n_clients = 0;
-    int *sock_clients = NULL;
-    pthread_t *client_threads = NULL;
     while (running) {
         client_threads =
             realloc(client_threads, (n_clients + 1) * sizeof(pthread_t));
@@ -157,8 +197,8 @@ void communicaiton(int port, int *msgid) {
 
         // Accept the client connection
         addr_size = sizeof(addr_client);
-        sock_clients[n_clients] =
-            accept(sock_server, (struct sockaddr *)&addr_client, &addr_size);
+        sock_clients[n_clients] = accept(
+            sock_communication, (struct sockaddr *)&addr_client, &addr_size);
         if (sock_clients[n_clients] == -1) {
             perror("communicaiton:accept");
             continue;
@@ -168,8 +208,7 @@ void communicaiton(int port, int *msgid) {
         handle_client_args *args = malloc(sizeof(handle_client_args));
         args->id = n_clients;
         args->sock = &sock_clients[n_clients];
-        args->msgid = msgid;
-        args->mutex_message_queue = &mutex_message_queue;
+        args->mutex_client = &mutex_client;
         if (pthread_create(&client_threads[n_clients], NULL, handle_client,
                            (void *)args) != 0) {
             perror("communicaiton:pthread_create");
@@ -179,112 +218,132 @@ void communicaiton(int port, int *msgid) {
 
         n_clients++;
     }
+
+    // Wait for the client threads
+    for (int i = 0; i < n_clients; i++) {
+        pthread_join(client_threads[i], NULL);
+    }
+
+    // Close the sockets
+    close(sock_communication);
+
+    // Destroy the semaphore
+    sem_destroy(&mutex_client);
+
+    // Free the memory
+    free(sock_clients);
     free(client_threads);
-    close(sock_server);
 
-    sem_destroy(&mutex_message_queue);
-
-    printf("communication closed properly\n");
+    exit(EXIT_SUCCESS);
 }
 
-void gestion_requete(char *ip, int port, int *msgid) {
+void gestion_requete(char *ip, int port) {
     struct hostent *server_host;
     static struct sockaddr_in addr_server;
     socklen_t addr_size;
 
-    int sock;
+    key_t msg_key;
+    int msg_id;
 
     char buffer[BUFFER_SIZE];
-    char *message_queue = malloc(BUFFER_SIZE * sizeof(char));
     char *message;
     char *response;
     char n_bytes;
 
-    while (running) {
-        // Initialize the socket
-        sock = socket(AF_INET, SOCK_DGRAM, 0);
-        if (sock == -1) {
-            perror("gestion_requete:socket");
-            sleep(1);
-            continue;
-        }
-
-        // Initialize the client address
-        server_host = gethostbyname(ip);
-        if (server_host == NULL) {
-            perror("gestion_requete:gethostbyname");
-            sleep(1);
-            continue;
-        }
-        bzero(&addr_server, sizeof(struct sockaddr_in));
-        addr_server.sin_family = AF_INET;
-        addr_server.sin_port = htons(port);
-        memcpy(&addr_server.sin_addr.s_addr, server_host->h_addr_list[0],
-               server_host->h_length);
-
-        break;
+    // Get the message queue
+    msg_key = ftok(MSG_PATH, 0);
+    if (msg_key == -1) {
+        perror("gestion_requete:ftok");
+        exit(EXIT_FAILURE);
     }
+    msg_id = msgget(msg_key, 0);
+    if (msg_id == -1) {
+        perror("gestion_requete:msgget");
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize the socket
+    sock_gestion_requete = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock_gestion_requete == -1) {
+        perror("gestion_requete:socket");
+        exit(EXIT_FAILURE);
+    }
+    // Initialize the client address
+    server_host = gethostbyname(ip);
+    if (server_host == NULL) {
+        perror("gestion_requete:gethostbyname");
+        exit(EXIT_FAILURE);
+    }
+    bzero(&addr_server, sizeof(struct sockaddr_in));
+    addr_server.sin_family = AF_INET;
+    addr_server.sin_port = htons(port);
+    memcpy(&addr_server.sin_addr.s_addr, server_host->h_addr_list[0],
+           server_host->h_length);
 
     printf("gestion-requete: ready\n");
 
     while (running) {
-        // Recieve the message from the message queue
-        if (msgrcv(*msgid, message_queue, sizeof(message_queue), 0, 0) == -1) {
+        // Receive the message from the message queue
+        if (msgrcv(msg_id, buffer, sizeof(buffer), 0, 0) == -1) {
             perror("gestion_requete:msgrcv");
             continue;
         }
-        message = message_queue;
+        message = malloc(strlen(buffer) * sizeof(char));
+        strcpy(message, buffer);
+        printf("gestion-requete: <-- %s communication\n", message);
+
+        // char *parts[3];
+        // char *part = strtok(message, ":");
+        // int i = 0;
+        // while (part != NULL) {
+        //     parts[i++] = part;
+        //     part = strtok(NULL, ":");
+        // }
+
+        // if (strcmp(parts[0], "login")) {
+
+        // } else if (strcmp(parts[0], "register")) {
+
+        // } else if (strcmp(parts[0], "list")) {
+
+        // } else {
+        //     continue;
+        // }
 
         // Send the message to the client RMI
-        n_bytes =
-            sendto(sock, message, strlen(message) + 1, 0,
-                   (struct sockaddr *)&addr_server, sizeof(struct sockaddr_in));
-        if (n_bytes == -1) {
+        if (sendto(sock_gestion_requete, message, strlen(message), 0,
+                   (struct sockaddr *)&addr_server,
+                   sizeof(addr_server)) == -1) {
             perror("gestion_requete:sendto");
             continue;
         }
-        printf("gestion-requete\t %s --> client-rmi\n", message);
 
         // Receive the response from the client RMI
         addr_size = sizeof(struct sockaddr_in);
-        n_bytes = recvfrom(sock, buffer, BUFFER_SIZE, 0,
+        n_bytes = recvfrom(sock_gestion_requete, buffer, BUFFER_SIZE, 0,
                            (struct sockaddr *)&addr_server, &addr_size);
         if (n_bytes == -1) {
             perror("gestion_requete:recvfrom");
             continue;
         }
         response = malloc(n_bytes * sizeof(char));
-        memcpy(response, buffer, n_bytes);
-        printf("gestion-requete\t <-- %s client-rmi\n", response);
+        strcpy(response, buffer);
 
         // Send the response to the message queue
-        strcpy(message_queue, response);
-        if (msgsnd(*msgid, message_queue, sizeof(message_queue), 0) == -1) {
+        printf("gestion-requete: %s --> communication\n", response);
+        if (msgsnd(msg_id, response, sizeof(response), 0) == -1) {
             perror("gestion_requete:msgsnd");
             continue;
         }
 
         free(response);
+        free(message);
     }
 
-    close(sock);
+    // Close the socket
+    close(sock_gestion_requete);
 
-    free(message_queue);
-
-    printf("gestion-requete closed properly\n");
-}
-
-void initialize_message_queue(int *msgid) {
-    key_t key = ftok("/tmp", 'a');
-    if (key == -1) {
-        perror("ftok");
-        exit(EXIT_FAILURE);
-    }
-    *msgid = msgget(key, 0666 | IPC_CREAT);
-    if (*msgid == -1) {
-        perror("msgget");
-        exit(EXIT_FAILURE);
-    }
+    exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[]) {
@@ -310,27 +369,62 @@ int main(int argc, char *argv[]) {
     printf("%s:%d\tcommunication\n", communication_ip, communication_port);
     printf("\n");
 
-    // Initialize the file message
-    int msgid;
-    initialize_message_queue(&msgid);
+    pid_t pid_communication;
+    pid_t pid_gestion_requete;
+    pid_t pid_client_rmi;
 
-    pid_t pid_communication = fork();
+    users_list_t users_list;
+    users_list.size = 0;
+
+    key_t msg_key;
+    key_t shm_key;
+    int msg_id;
+    int shm_id;
+
+    // Initialize the file message
+    system("touch msg");
+    msg_key = ftok(MSG_PATH, 0);
+    if (msg_key == -1) {
+        perror("ftok");
+        exit(EXIT_FAILURE);
+    }
+    // Create the message queue
+    msg_id = msgget(msg_key, IPC_CREAT | 0666);
+    if (msg_id == -1) {
+        perror("msgget");
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize the shared memory
+    system("touch shm");
+    shm_key = ftok(SHM_PATH, 0);
+    if (shm_key == -1) {
+        perror("ftok");
+        exit(EXIT_FAILURE);
+    }
+    // Create the shared memory
+    shm_id = shmget(shm_key, sizeof(users_list), IPC_CREAT | 0666);
+    if (shm_id == -1) {
+        perror("shmget");
+        exit(EXIT_FAILURE);
+    }
+
+    // Launch the processes
+    pid_communication = fork();
     if (pid_communication == -1) {
         perror("fork");
         exit(EXIT_FAILURE);
     } else if (pid_communication == 0) {
-        communicaiton(communication_port, &msgid);
+        communicaiton(communication_port);
     }
-
-    pid_t pid_request = fork();
-    if (pid_request == -1) {
+    pid_gestion_requete = fork();
+    if (pid_gestion_requete == -1) {
         perror("fork");
         exit(EXIT_FAILURE);
-    } else if (pid_request == 0) {
-        gestion_requete("localhost", client_rmi_port, &msgid);
+    } else if (pid_gestion_requete == 0) {
+        gestion_requete("localhost", client_rmi_port);
     }
-
-    pid_t pid_client_rmi = fork();
+    pid_client_rmi = fork();
     if (pid_client_rmi == -1) {
         perror("fork");
         exit(EXIT_FAILURE);
@@ -339,16 +433,23 @@ int main(int argc, char *argv[]) {
                gestion_compte_ip, argv[2], argv[3], NULL);
     }
 
+    // Wait for signal
     while (running)
         ;
 
-    // Attendre la fin des processus fils
-    waitpid(pid_client_rmi, NULL, 0);
-    waitpid(pid_request, NULL, 0);
-    waitpid(pid_communication, NULL, 0);
+    // Kill the child processes
+    kill(pid_communication, SIGKILL);
+    kill(pid_gestion_requete, SIGKILL);
+    kill(pid_client_rmi, SIGKILL);
 
-    // Supprimer la file de messages
-    msgctl(msgid, IPC_RMID, NULL);
+    // Wait for the child processes
+    waitpid(pid_communication, NULL, 0);
+    waitpid(pid_gestion_requete, NULL, 0);
+    waitpid(pid_client_rmi, NULL, 0);
+
+    // Remove the message queue and the shared memory
+    msgctl(msg_id, IPC_RMID, NULL);
+    shmctl(shm_id, IPC_RMID, NULL);
 
     exit(EXIT_SUCCESS);
 }
