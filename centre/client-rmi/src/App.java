@@ -10,7 +10,6 @@ public class App {
 
     private static String gestion_compte_ip;
     private static int gestion_compte_port;
-    private static String client_rmi_ip;
     private static int client_rmi_port;
 
     public static void main(String[] args) throws Exception {
@@ -22,14 +21,7 @@ public class App {
 
         gestion_compte_ip = args[0];
         gestion_compte_port = Integer.parseInt(args[1]);
-        client_rmi_ip = "localhost";
         client_rmi_port = Integer.parseInt(args[2]);
-
-        System.out.println(String.format(
-            "%s:%d\tgestion-compte", gestion_compte_ip, gestion_compte_port));
-        System.out.println(
-            String.format("%s:%d\tclient-rmi", client_rmi_ip, client_rmi_port));
-        System.out.println("\n");
 
         // Reach RMI server
         new Thread() {
@@ -72,9 +64,12 @@ public class App {
             gestionCompte = (ICompte)Naming.lookup(String.format(
                 "rmi://%s:%d/Compte", gestion_compte_ip, gestion_compte_port));
             if (!App.server_rmi_running)
-                System.out.println("client-rmi:\tconnected to gestion-compte");
+                System.out.println("client-rmi: connected to gestion-compte");
             App.server_rmi_running = true;
         } catch (Exception e) {
+            if (App.server_rmi_running)
+                System.out.println(
+                    "client-rmi: could not connect to gestion-compte");
             App.server_rmi_running = false;
         }
     }
@@ -85,6 +80,8 @@ public class App {
             DatagramSocket socket = new DatagramSocket(client_rmi_port);
             DatagramPacket packet = new DatagramPacket(data, data.length);
 
+            System.out.println("client-rmi: ready");
+
             while (running) {
                 packet.setData(data);
                 socket.receive(packet);
@@ -92,14 +89,16 @@ public class App {
                 String message =
                     new String(packet.getData(), 0, packet.getLength());
 
-                System.out.println("<-- " + message + " gestion-requete");
+                System.out.println("client-rmi <-- " + message +
+                                   " gestion-requete");
 
                 String[] parts = message.split(":");
                 String action = parts[0];
 
                 String response = handle_action(action, parts);
 
-                System.out.println(response + " --> gestion-requete");
+                System.out.println("client-rmi " + response +
+                                   " --> gestion-requete");
 
                 packet.setData(response.getBytes());
                 socket.send(packet);

@@ -33,7 +33,7 @@ public class App extends UnicastRemoteObject implements ICompte {
         App.users = new HashMap<>();
 
         System.setProperty("java.rmi.server.hostname", App.gestion_compte_ip);
-        System.setProperty("java.security.policy", "server.policy");
+        System.setProperty("java.security.policy", "file:./server.policy");
 
         System.out.print("\033[H\033[2J");
         System.out.println(String.format("%s:%d\tgestion-compte",

@@ -29,6 +29,11 @@ volatile sig_atomic_t running = 1;
 
 void sigpipe_handler() { running = 0; }
 
+void *broadcast(char *message, int *sock_clients, int n_clients) {
+    for (int i = 0; i < n_clients; i++)
+        write(sock_clients[i], message, strlen(message) + 1);
+}
+
 void *handle_client(void *arg) {
     handle_client_args *args = (handle_client_args *)arg;
     int id = args->id;
@@ -58,6 +63,8 @@ void *handle_client(void *arg) {
         memcpy(message, buffer, n_bytes);
         printf("communication\t <-- %s client-%d\n", message, id);
 
+        // broadcast(message, sock_clients, n_clients);
+
         // Send the message to the message queue
         sem_wait(mutex_message_queue);
         strcpy(message_queue, message);
@@ -80,6 +87,7 @@ void *handle_client(void *arg) {
         // Send the response to the client
         write(*sock, response, strlen(response) + 1);
         printf("communication\t%s --> client-%d\n", response, id);
+        printf("\n");
 
         free(message);
         free(response);
@@ -88,61 +96,66 @@ void *handle_client(void *arg) {
     close(*sock);
     free(args);
     free(message_queue);
-
-    printf("client-%d closed properly\n", id);
 }
 
-void communicaiton(int port, int *msgid, sem_t *mutex_message_queue) {
+void communicaiton(int port, int *msgid) {
     struct sockaddr_in addr_client;
     struct sockaddr_in addr_server;
     int addr_size;
 
     int sock_server;
-    int *sock_clients;
 
-    bool ready = false;
-    while (running && !ready) {
-        sleep(1);
+    // Initialize the semaphore
+    sem_t mutex_message_queue;
+    sem_init(&mutex_message_queue, 0, 1);
 
-        // Initialize the sockets
-        sock_server = socket(AF_INET, SOCK_STREAM, 0);
-        if (sock_server == -1) {
-            perror("communicaiton:socket");
-            continue;
-        }
-
-        // Initialize the server address
-        memset((char *)&addr_server, 0, sizeof(addr_server));
-        addr_server.sin_family = AF_INET;
-        addr_server.sin_addr.s_addr = INADDR_ANY;
-        addr_server.sin_port = htons(port);
-
-        // Bind the socket to the server address
-        if (bind(sock_server, (struct sockaddr *)&addr_server,
-                 sizeof(addr_server)) == -1) {
-            perror("communicaiton:bind");
-            close(sock_server);
-            continue;
-        }
-
-        // Listen for incoming connections
-        if (listen(sock_server, 5) == -1) {
-            perror("communicaiton:listen");
-            close(sock_server);
-            continue;
-        }
-
-        ready = true;
+    // Initialize the sockets
+    sock_server = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_server == -1) {
+        perror("communicaiton:socket");
+        exit(EXIT_FAILURE);
     }
 
+    // Initialize the server address
+    memset((char *)&addr_server, 0, sizeof(addr_server));
+    addr_server.sin_family = AF_INET;
+    addr_server.sin_addr.s_addr = INADDR_ANY;
+    addr_server.sin_port = htons(port);
+
+    // Bind the socket to the server address
+    if (bind(sock_server, (struct sockaddr *)&addr_server,
+             sizeof(addr_server)) == -1) {
+        perror("communicaiton:bind");
+        close(sock_server);
+        exit(EXIT_FAILURE);
+    }
+
+    // Listen for incoming connections
+    if (listen(sock_server, 5) == -1) {
+        perror("communicaiton:listen");
+        close(sock_server);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("communication: ready\n");
+
     int n_clients = 0;
+    int *sock_clients = NULL;
     pthread_t *client_threads = NULL;
     while (running) {
         client_threads =
             realloc(client_threads, (n_clients + 1) * sizeof(pthread_t));
+        if (client_threads == NULL) {
+            perror("communicaiton:realloc");
+            break;
+        }
         sock_clients = realloc(sock_clients, (n_clients + 1) * sizeof(int));
+        if (sock_clients == NULL) {
+            perror("communicaiton:realloc");
+            break;
+        }
 
-        // Accept the incoming connection
+        // Accept the client connection
         addr_size = sizeof(addr_client);
         sock_clients[n_clients] =
             accept(sock_server, (struct sockaddr *)&addr_client, &addr_size);
@@ -155,33 +168,23 @@ void communicaiton(int port, int *msgid, sem_t *mutex_message_queue) {
         handle_client_args *args = malloc(sizeof(handle_client_args));
         args->id = n_clients;
         args->sock = &sock_clients[n_clients];
+        args->sock_clients = sock_clients;
+        args->n_clients = n_clients;
         args->msgid = msgid;
-        args->mutex_message_queue = mutex_message_queue;
+        args->mutex_message_queue = &mutex_message_queue;
         if (pthread_create(&client_threads[n_clients], NULL, handle_client,
                            (void *)args) != 0) {
             perror("communicaiton:pthread_create");
             continue;
         }
+        pthread_detach(client_threads[n_clients]);
 
         n_clients++;
     }
-
-    printf("communication\tclosing\n");
-
-    for (int i = 0; i < n_clients; i++) {
-        printf("communication\tclosing client-%d\n", i);
-    }
-
-    // Wait for all the client threads to finish
-    for (int i = 0; i < n_clients; i++) {
-        if (pthread_join(client_threads[i], NULL) != 0) {
-            perror("communicaiton:pthread_join");
-            continue;
-        }
-    }
-
     free(client_threads);
     close(sock_server);
+
+    sem_destroy(&mutex_message_queue);
 
     printf("communication closed properly\n");
 }
@@ -199,17 +202,20 @@ void gestion_requete(char *ip, int port, int *msgid) {
     char *response;
     char n_bytes;
 
-    bool ready = false;
-    while (running && !ready) {
-        sleep(1);
-
+    while (running) {
         // Initialize the socket
         sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock == -1) {
+            perror("gestion_requete:socket");
+            sleep(1);
+            continue;
+        }
 
         // Initialize the client address
         server_host = gethostbyname(ip);
         if (server_host == NULL) {
             perror("gestion_requete:gethostbyname");
+            sleep(1);
             continue;
         }
         bzero(&addr_server, sizeof(struct sockaddr_in));
@@ -218,8 +224,10 @@ void gestion_requete(char *ip, int port, int *msgid) {
         memcpy(&addr_server.sin_addr.s_addr, server_host->h_addr_list[0],
                server_host->h_length);
 
-        ready = true;
+        break;
     }
+
+    printf("gestion-requete: ready\n");
 
     while (running) {
         // Recieve the message from the message queue
@@ -304,10 +312,6 @@ int main(int argc, char *argv[]) {
     printf("%s:%d\tcommunication\n", communication_ip, communication_port);
     printf("\n");
 
-    // Initialize the semaphore
-    sem_t mutex_message_queue;
-    sem_init(&mutex_message_queue, 0, 1);
-
     // Initialize the file message
     int msgid;
     initialize_message_queue(&msgid);
@@ -317,7 +321,7 @@ int main(int argc, char *argv[]) {
         perror("fork");
         exit(EXIT_FAILURE);
     } else if (pid_communication == 0) {
-        communicaiton(communication_port, &msgid, &mutex_message_queue);
+        communicaiton(communication_port, &msgid);
     }
 
     pid_t pid_request = fork();
@@ -328,25 +332,22 @@ int main(int argc, char *argv[]) {
         gestion_requete("localhost", client_rmi_port, &msgid);
     }
 
-    // pid_t pid_client_rmi = fork();
-    // if (pid_client_rmi == -1) {
-    //     perror("fork");
-    //     exit(EXIT_FAILURE);
-    // } else if (pid_client_rmi == 0) {
-    //     execlp("java", "java", "-jar", "client-rmi/client-rmi.jar",
-    //            gestion_compte_ip, gestion_compte_ip, client_rmi_port, NULL);
-    // }
+    pid_t pid_client_rmi = fork();
+    if (pid_client_rmi == -1) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+    } else if (pid_client_rmi == 0) {
+        execlp("java", "java", "-jar", "client-rmi/client-rmi.jar",
+               gestion_compte_ip, argv[2], argv[3], NULL);
+    }
 
     while (running)
         ;
 
     // Attendre la fin des processus fils
-    // waitpid(pid_client_rmi, NULL, 0);
+    waitpid(pid_client_rmi, NULL, 0);
     waitpid(pid_request, NULL, 0);
     waitpid(pid_communication, NULL, 0);
-
-    // Supprimer le sémaphore
-    sem_destroy(&mutex_message_queue);
 
     // Supprimer la file de messages
     msgctl(msgid, IPC_RMID, NULL);

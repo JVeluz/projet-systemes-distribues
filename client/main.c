@@ -65,7 +65,7 @@ bool login_user(int sock, user_t *user) {
     } else if (strcmp(response, "success") == 0) {
         return true;
     }
-    printf("An error occurred\n");
+    printf("An error occurred: %s\n", response);
     sleep(3);
     return false;
 }
@@ -215,7 +215,7 @@ void connect_server(int *sock, char *ip, int port) {
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {
-        printf("Usage: %s <communication_ip> <communication_port>\n", argv[0]);
+        printf("Usage: %s <communication-ip> <communication-port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
