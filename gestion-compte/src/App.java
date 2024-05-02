@@ -19,15 +19,30 @@ public class App extends UnicastRemoteObject implements ICompte {
     public App() throws RemoteException {
         super();
         App.users = new java.util.HashMap<>();
+        // Create users file if it doesn't exist
+        java.io.File file = new java.io.File(USERS_FILE);
+        if (!file.exists()) {
+            try {
+                file.createNewFile();
+            } catch (Exception e) {
+                System.out.println("Failed to create users file: " + e);
+            }
+        }
+        load();
+        System.out.println("Users loaded from file.");
+        for (Map.Entry<String, String> entry : users.entrySet()) {
+            System.out.println(String.format("User: %s, Password: %s",
+                                             entry.getKey(), entry.getValue()));
+        }
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 1) {
-            System.out.println("Usage: java App <port>");
+        if (args.length != 2) {
+            System.out.println("Usage: java App <ip> <port>");
             System.exit(1);
         }
 
-        gestion_compte_ip = "localhost";
+        gestion_compte_ip = args[0];
         gestion_compte_port = Integer.parseInt(args[0]);
 
         App.users = new HashMap<>();
@@ -40,23 +55,6 @@ public class App extends UnicastRemoteObject implements ICompte {
                                          App.gestion_compte_ip,
                                          App.gestion_compte_port));
         System.out.println("\n");
-
-        // Create users file if it doesn't exist
-        java.io.File file = new java.io.File(USERS_FILE);
-        if (!file.exists()) {
-            try {
-                file.createNewFile();
-            } catch (Exception e) {
-                System.out.println("Failed to create users file: " + e);
-            }
-        }
-
-        load();
-        System.out.println("Users loaded from file.");
-        for (Map.Entry<String, String> entry : users.entrySet()) {
-            System.out.println(String.format("User: %s, Password: %s",
-                                             entry.getKey(), entry.getValue()));
-        }
 
         try {
             App app = new App();
@@ -102,7 +100,7 @@ public class App extends UnicastRemoteObject implements ICompte {
         return true;
     }
 
-    private static void save() {
+    private void save() {
         try (BufferedWriter writer =
                  new BufferedWriter(new FileWriter(USERS_FILE))) {
             for (Map.Entry<String, String> entry : users.entrySet()) {
@@ -114,7 +112,7 @@ public class App extends UnicastRemoteObject implements ICompte {
         }
     }
 
-    private static void load() {
+    private void load() {
         users.clear();
         try (BufferedReader reader =
                  new BufferedReader(new FileReader(USERS_FILE))) {
