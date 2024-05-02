@@ -44,22 +44,50 @@ int sock_gestion_requete;
 
 void sigpipe_handler() { running = 0; }
 
-void broadcast(char *message) {
+int get_msg_id() {
+    key_t msg_key;
+    int msg_id;
+
+    // Get the message queue
+    msg_key = ftok(MSG_PATH, 0);
+    if (msg_key == -1) {
+        perror("get_msg_id:ftok");
+        exit(EXIT_FAILURE);
+    }
+    msg_id = msgget(msg_key, 0);
+    if (msg_id == -1) {
+        perror("get_msg_id:msgget");
+        exit(EXIT_FAILURE);
+    }
+
+    return msg_id;
+}
+
+int get_shm_id() {
     key_t shm_key;
     int shm_id;
-    users_list_t *users_list;
 
     // Get the shared memory
     shm_key = ftok(SHM_PATH, 0);
     if (shm_key == -1) {
-        perror("broadcast:ftok");
+        perror("get_shm_id:ftok");
         exit(EXIT_FAILURE);
     }
-    shm_id = shmget(shm_key, sizeof(users_list), 0);
+    shm_id = shmget(shm_key, sizeof(users_list_t), 0);
     if (shm_id == -1) {
-        perror("broadcast:shmget");
+        perror("get_shm_id:shmget");
         exit(EXIT_FAILURE);
     }
+
+    return shm_id;
+}
+
+void broadcast(char *message) {
+    int shm_id;
+    users_list_t *users_list;
+
+    // Get the shared memory
+    shm_id = get_shm_id();
 
     // Get the users list
     users_list = shmat(shm_id, NULL, 0);
@@ -86,21 +114,12 @@ void *handle_client(void *arg) {
     char *response;
     char n_bytes;
 
-    key_t msg_key;
     int msg_id;
 
     // Get the message queue
-    msg_key = ftok(MSG_PATH, 0);
-    if (msg_key == -1) {
-        perror("communication:ftok");
-        exit(EXIT_FAILURE);
-    }
-    msg_id = msgget(msg_key, 0);
-    if (msg_id == -1) {
-        perror("communication:msgget");
-        exit(EXIT_FAILURE);
-    }
+    msg_id = get_msg_id();
 
+    printf("\n");
     printf("communication: client-%d connected\n", id);
 
     while (running) {
@@ -108,7 +127,6 @@ void *handle_client(void *arg) {
         n_bytes = read(*sock, buffer, BUFFER_SIZE);
         // Check if the client is disready
         if (n_bytes == 0) {
-            printf("communication: client-%d disconnected\n", id);
             break;
         }
         printf("\n");
@@ -139,7 +157,7 @@ void *handle_client(void *arg) {
         sem_post(mutex_client);
 
         // Send the response to the client
-        printf("communication: %s --> client-%d\n", response, id);
+        printf("communication: --> %s client-%d\n", response, id);
         write(*sock, response, strlen(response) + 1);
 
         free(message);
@@ -148,6 +166,11 @@ void *handle_client(void *arg) {
 
     close(*sock);
     free(args);
+
+    printf("\n");
+    printf("communication: client-%d exit\n", id);
+
+    pthread_exit(NULL);
 }
 
 void communicaiton(int port) {
@@ -157,40 +180,20 @@ void communicaiton(int port) {
 
     sem_t mutex_client;
 
+    int n_clients;
     int *sock_clients = NULL;
     pthread_t *client_threads = NULL;
+    users_list_t *users_list = NULL;
 
-    key_t msg_key;
-    key_t shm_key;
     int msg_id;
     int shm_id;
 
-    // Get the message queue
-    msg_key = ftok(MSG_PATH, 0);
-    if (msg_key == -1) {
-        perror("communication:ftok");
-        exit(EXIT_FAILURE);
-    }
-    msg_id = msgget(msg_key, 0);
-    if (msg_id == -1) {
-        perror("communication:msgget");
-        exit(EXIT_FAILURE);
-    }
-
-    // Get the shared memory
-    shm_key = ftok(SHM_PATH, 0);
-    if (shm_key == -1) {
-        perror("handle_client:ftok");
-        exit(EXIT_FAILURE);
-    }
-    shm_id = shmget(shm_key, sizeof(users_list_t), 0);
-    if (shm_id == -1) {
-        perror("handle_client:shmget");
-        exit(EXIT_FAILURE);
-    }
+    // Get the message queue and the shared memory
+    msg_id = get_msg_id();
+    shm_id = get_shm_id();
 
     // Get the users list
-    users_list_t *users_list = shmat(shm_id, NULL, 0);
+    users_list = shmat(shm_id, NULL, 0);
     if (users_list == (void *)-1) {
         perror("handle_client:shmat");
         exit(EXIT_FAILURE);
@@ -229,7 +232,7 @@ void communicaiton(int port) {
 
     printf("communication: ready\n");
 
-    int n_clients = 0;
+    n_clients = 0;
     while (running) {
         client_threads =
             realloc(client_threads, (n_clients + 1) * sizeof(pthread_t));
@@ -272,6 +275,7 @@ void communicaiton(int port) {
 
         n_clients++;
     }
+    printf("communication: exit\n");
 
     // Wait for the client threads
     for (int i = 0; i < n_clients; i++) {
@@ -305,16 +309,7 @@ void gestion_requete(char *ip, int port) {
     char n_bytes;
 
     // Get the message queue
-    msg_key = ftok(MSG_PATH, 0);
-    if (msg_key == -1) {
-        perror("gestion_requete:ftok");
-        exit(EXIT_FAILURE);
-    }
-    msg_id = msgget(msg_key, 0);
-    if (msg_id == -1) {
-        perror("gestion_requete:msgget");
-        exit(EXIT_FAILURE);
-    }
+    msg_id = get_msg_id();
 
     // Initialize the socket
     sock_gestion_requete = socket(AF_INET, SOCK_DGRAM, 0);
@@ -367,7 +362,7 @@ void gestion_requete(char *ip, int port) {
         memset(buffer, 0, BUFFER_SIZE);
 
         // Send the response to the message queue
-        printf("gestion-requete: %s --> communication\n", response);
+        printf("gestion-requete: --> %s communication\n", response);
         if (msgsnd(msg_id, response, sizeof(response), 0) == -1) {
             perror("gestion_requete:msgsnd");
             continue;
@@ -376,6 +371,7 @@ void gestion_requete(char *ip, int port) {
         free(response);
         free(message);
     }
+    printf("gestion-requete: exit\n");
 
     // Close the socket
     close(sock_gestion_requete);
@@ -401,14 +397,15 @@ int main(int argc, char *argv[]) {
     char *communication_ip = "localhost";
     int communication_port = atoi(argv[4]);
 
+    system("clear");
     printf("%s:%d\tgestion-compte\n", gestion_compte_ip, gestion_compte_port);
     printf("%s:%d\tclient-rmi\n", client_rmi_ip, client_rmi_port);
     printf("%s:%d\tcommunication\n", communication_ip, communication_port);
     printf("\n");
 
-    pid_t pid_communication;
-    pid_t pid_gestion_requete;
     pid_t pid_client_rmi;
+    pid_t pid_gestion_requete;
+    pid_t pid_communication;
 
     users_list_t users_list;
     users_list.size = 0;
@@ -447,20 +444,6 @@ int main(int argc, char *argv[]) {
     }
 
     // Launch the processes
-    pid_communication = fork();
-    if (pid_communication == -1) {
-        perror("fork");
-        exit(EXIT_FAILURE);
-    } else if (pid_communication == 0) {
-        communicaiton(communication_port);
-    }
-    pid_gestion_requete = fork();
-    if (pid_gestion_requete == -1) {
-        perror("fork");
-        exit(EXIT_FAILURE);
-    } else if (pid_gestion_requete == 0) {
-        gestion_requete("localhost", client_rmi_port);
-    }
     pid_client_rmi = fork();
     if (pid_client_rmi == -1) {
         perror("fork");
@@ -468,6 +451,22 @@ int main(int argc, char *argv[]) {
     } else if (pid_client_rmi == 0) {
         execlp("java", "java", "-jar", "client-rmi/client-rmi.jar",
                gestion_compte_ip, argv[2], argv[3], NULL);
+    }
+    sleep(1);
+    pid_gestion_requete = fork();
+    if (pid_gestion_requete == -1) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+    } else if (pid_gestion_requete == 0) {
+        gestion_requete("localhost", client_rmi_port);
+    }
+    sleep(1);
+    pid_communication = fork();
+    if (pid_communication == -1) {
+        perror("fork");
+        exit(EXIT_FAILURE);
+    } else if (pid_communication == 0) {
+        communicaiton(communication_port);
     }
 
     // Wait for signal
@@ -487,6 +486,13 @@ int main(int argc, char *argv[]) {
     // Remove the message queue and the shared memory
     msgctl(msg_id, IPC_RMID, NULL);
     shmctl(shm_id, IPC_RMID, NULL);
+
+    // Close the sockets
+    close(sock_communication);
+    close(sock_gestion_requete);
+
+    // Free the memory
+    free(users_list.users);
 
     exit(EXIT_SUCCESS);
 }

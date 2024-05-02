@@ -6,7 +6,6 @@ public class App {
     private static ICompte gestionCompte;
 
     private static boolean running = true;
-    private static boolean server_rmi_running = false;
 
     private static String gestion_compte_ip;
     private static int gestion_compte_port;
@@ -23,65 +22,53 @@ public class App {
         gestion_compte_port = Integer.parseInt(args[1]);
         client_rmi_port = Integer.parseInt(args[2]);
 
-        // Reach RMI server
-        new Thread() {
-            public void run() {
-                while (running) {
-                    reach_server();
-                    try {
-                        Thread.sleep(5000);
-                    } catch (Exception e) {
-                    }
-                }
-            }
-        }.start();
-
         // UDP server
         new Thread() {
             public void run() {
                 while (running) {
                     client_rmi();
                     try {
-                        Thread.sleep(5000);
+                        Thread.sleep(1000);
                     } catch (Exception e) {
+                        System.err.println("Error: " + e);
+                        break;
                     }
                 }
             }
         }.start();
 
-        String input = "";
-        while (running) {
-            input = System.console().readLine();
-            if (input.equals("stop"))
-                running = false;
-        }
+        while (running)
+            ;
 
         System.exit(0);
     }
 
-    private static void reach_server() {
+    private static void client_rmi() {
         try {
             gestionCompte = (ICompte)Naming.lookup(String.format(
                 "rmi://%s:%d/Compte", gestion_compte_ip, gestion_compte_port));
-            if (!App.server_rmi_running)
-                System.out.println("client-rmi: connected to gestion-compte");
-            App.server_rmi_running = true;
+            System.out.println("client-rmi: connected to gestion-compte");
         } catch (Exception e) {
-            if (App.server_rmi_running)
-                System.out.println(
-                    "client-rmi: could not connect to gestion-compte");
-            App.server_rmi_running = false;
+            System.out.println(
+                "client-rmi: could not connect to gestion-compte");
         }
-    }
 
-    private static void client_rmi() {
+        byte[] data;
+        DatagramPacket packet;
+        DatagramSocket socket;
+
         try {
-            byte[] data = new byte[256];
-            DatagramSocket socket = new DatagramSocket(client_rmi_port);
-            DatagramPacket packet = new DatagramPacket(data, data.length);
+            data = new byte[256];
+            packet = new DatagramPacket(data, data.length);
+            socket = new DatagramSocket(client_rmi_port);
+        } catch (Exception e) {
+            System.err.println("client-rmi: " + e);
+            return;
+        }
 
-            System.out.println("client-rmi: ready");
+        System.out.println("client-rmi: ready");
 
+        try {
             while (running) {
                 packet.setData(data);
                 socket.receive(packet);
@@ -97,16 +84,16 @@ public class App {
 
                 String response = handle_action(action, parts);
 
-                System.out.println("client-rmi " + response +
-                                   " --> gestion-requete");
+                System.out.println("client-rmi --> " + response +
+                                   " gestion-requete");
 
                 packet.setData(response.getBytes());
                 socket.send(packet);
             }
-            socket.close();
         } catch (Exception e) {
-            System.err.println("UDP server failed: " + e);
+            System.err.println("client-rmi: " + e);
         }
+        socket.close();
     }
 
     private static String handle_action(String action, String[] parts) {
