@@ -168,8 +168,6 @@ void communicaiton(int port, int *msgid) {
         handle_client_args *args = malloc(sizeof(handle_client_args));
         args->id = n_clients;
         args->sock = &sock_clients[n_clients];
-        args->sock_clients = sock_clients;
-        args->n_clients = n_clients;
         args->msgid = msgid;
         args->mutex_message_queue = &mutex_message_queue;
         if (pthread_create(&client_threads[n_clients], NULL, handle_client,
