@@ -22,7 +22,12 @@
 #define SHM_PATH "shm"
 
 typedef struct {
-    char *users[100];
+    char *username;
+    int sock;
+} user_t;
+
+typedef struct {
+    user_t *users;
     unsigned int size;
 } users_list_t;
 
@@ -39,21 +44,35 @@ int sock_gestion_requete;
 
 void sigpipe_handler() { running = 0; }
 
-void broadcast(char *message, int *sock_clients, int n_clients) {
-    for (int i = 0; i < n_clients; i++)
-        write(sock_clients[i], message, strlen(message) + 1);
-}
+void broadcast(char *message) {
+    key_t shm_key;
+    int shm_id;
+    users_list_t *users_list;
 
-int send_to_message_queue(char *message, int *msg_id) {
-    char *message_queue = malloc(BUFFER_SIZE * sizeof(char));
-    strcpy(message_queue, message);
-    if (msgsnd(*msg_id, message_queue, sizeof(message_queue), 0) == -1) {
-        perror("send_to_message_queue:msgsnd");
-        free(message_queue);
-        return -1;
+    // Get the shared memory
+    shm_key = ftok(SHM_PATH, 0);
+    if (shm_key == -1) {
+        perror("broadcast:ftok");
+        exit(EXIT_FAILURE);
     }
-    free(message_queue);
-    return 0;
+    shm_id = shmget(shm_key, sizeof(users_list), 0);
+    if (shm_id == -1) {
+        perror("broadcast:shmget");
+        exit(EXIT_FAILURE);
+    }
+
+    // Get the users list
+    users_list = shmat(shm_id, NULL, 0);
+    if (users_list == (void *)-1) {
+        perror("broadcast:shmat");
+        exit(EXIT_FAILURE);
+    }
+
+    // Send the message to all the clients
+    printf("communication: --> %s clients\n", message);
+    for (int i = 0; i < users_list->size; i++) {
+        write(users_list->users[i].sock, message, strlen(message) + 1);
+    }
 }
 
 void *handle_client(void *arg) {
@@ -62,22 +81,23 @@ void *handle_client(void *arg) {
     int *sock = args->sock;
     sem_t *mutex_client = args->mutex_client;
 
-    int msg_id;
-
     char buffer[BUFFER_SIZE];
     char *message;
     char *response;
     char n_bytes;
 
+    key_t msg_key;
+    int msg_id;
+
     // Get the message queue
-    key_t msg_key = ftok(MSG_PATH, 0);
+    msg_key = ftok(MSG_PATH, 0);
     if (msg_key == -1) {
-        perror("handle_client:ftok");
+        perror("communication:ftok");
         exit(EXIT_FAILURE);
     }
     msg_id = msgget(msg_key, 0);
     if (msg_id == -1) {
-        perror("handle_client:msgget");
+        perror("communication:msgget");
         exit(EXIT_FAILURE);
     }
 
@@ -95,6 +115,12 @@ void *handle_client(void *arg) {
         printf("communication: <-- %s client-%d\n", buffer, id);
         message = malloc(n_bytes * sizeof(char));
         strcpy(message, buffer);
+
+        if (strncmp(message, "message:", 8) == 0) {
+            broadcast(message);
+            free(message);
+            continue;
+        }
 
         // Send the message to the message queue
         sem_wait(mutex_client);
@@ -134,10 +160,13 @@ void communicaiton(int port) {
     int *sock_clients = NULL;
     pthread_t *client_threads = NULL;
 
+    key_t msg_key;
+    key_t shm_key;
     int msg_id;
+    int shm_id;
 
     // Get the message queue
-    key_t msg_key = ftok(MSG_PATH, 0);
+    msg_key = ftok(MSG_PATH, 0);
     if (msg_key == -1) {
         perror("communication:ftok");
         exit(EXIT_FAILURE);
@@ -145,6 +174,25 @@ void communicaiton(int port) {
     msg_id = msgget(msg_key, 0);
     if (msg_id == -1) {
         perror("communication:msgget");
+        exit(EXIT_FAILURE);
+    }
+
+    // Get the shared memory
+    shm_key = ftok(SHM_PATH, 0);
+    if (shm_key == -1) {
+        perror("handle_client:ftok");
+        exit(EXIT_FAILURE);
+    }
+    shm_id = shmget(shm_key, sizeof(users_list_t), 0);
+    if (shm_id == -1) {
+        perror("handle_client:shmget");
+        exit(EXIT_FAILURE);
+    }
+
+    // Get the users list
+    users_list_t *users_list = shmat(shm_id, NULL, 0);
+    if (users_list == (void *)-1) {
+        perror("handle_client:shmat");
         exit(EXIT_FAILURE);
     }
 
@@ -215,6 +263,12 @@ void communicaiton(int port) {
             continue;
         }
         pthread_detach(client_threads[n_clients]);
+
+        users_list->users =
+            realloc(users_list->users, (users_list->size + 1) * sizeof(user_t));
+        users_list->users[users_list->size].username = "client";
+        users_list->users[users_list->size].sock = sock_clients[n_clients];
+        users_list->size++;
 
         n_clients++;
     }
@@ -290,25 +344,8 @@ void gestion_requete(char *ip, int port) {
         }
         message = malloc(strlen(buffer) * sizeof(char));
         strcpy(message, buffer);
+        memset(buffer, 0, BUFFER_SIZE);
         printf("gestion-requete: <-- %s communication\n", message);
-
-        // char *parts[3];
-        // char *part = strtok(message, ":");
-        // int i = 0;
-        // while (part != NULL) {
-        //     parts[i++] = part;
-        //     part = strtok(NULL, ":");
-        // }
-
-        // if (strcmp(parts[0], "login")) {
-
-        // } else if (strcmp(parts[0], "register")) {
-
-        // } else if (strcmp(parts[0], "list")) {
-
-        // } else {
-        //     continue;
-        // }
 
         // Send the message to the client RMI
         if (sendto(sock_gestion_requete, message, strlen(message), 0,
@@ -319,7 +356,6 @@ void gestion_requete(char *ip, int port) {
         }
 
         // Receive the response from the client RMI
-        addr_size = sizeof(struct sockaddr_in);
         n_bytes = recvfrom(sock_gestion_requete, buffer, BUFFER_SIZE, 0,
                            (struct sockaddr *)&addr_server, &addr_size);
         if (n_bytes == -1) {
@@ -328,6 +364,7 @@ void gestion_requete(char *ip, int port) {
         }
         response = malloc(n_bytes * sizeof(char));
         strcpy(response, buffer);
+        memset(buffer, 0, BUFFER_SIZE);
 
         // Send the response to the message queue
         printf("gestion-requete: %s --> communication\n", response);

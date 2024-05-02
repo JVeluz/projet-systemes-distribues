@@ -2,6 +2,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,10 +19,15 @@ typedef struct {
     char *password;
 } user_t;
 
-char *message_server(int sock, char *message) {
+sem_t sem;
+
+int pipe_fd;
+
+char *message_server(int sock, char *message, bool read_response) {
     char *response;
     char nb_octets;
 
+    sem_wait(&sem);
     response = malloc(BUFFER_SIZE);
     nb_octets = write(sock, message, strlen(message) + 1);
     if (nb_octets == -1) {
@@ -34,7 +40,12 @@ char *message_server(int sock, char *message) {
         sleep(3);
         exit(EXIT_FAILURE);
     }
+    if (!read_response) {
+        sem_post(&sem);
+        return NULL;
+    }
     read(sock, response, BUFFER_SIZE);
+    sem_post(&sem);
     return response;
 }
 
@@ -56,8 +67,7 @@ bool login_user(int sock, user_t *user) {
     char message[BUFFER_SIZE];
     sprintf(message, "login:%s:%s", user->username, user->password);
 
-    char *response = message_server(sock, message);
-
+    char *response = message_server(sock, message, true);
     if (strcmp(response, "failed") == 0) {
         printf("Invalid username or password...\n");
         sleep(3);
@@ -88,7 +98,7 @@ bool register_user(int sock, user_t *user) {
     char message[BUFFER_SIZE];
     sprintf(message, "register:%s:%s", user->username, user->password);
 
-    char *response = message_server(sock, message);
+    char *response = message_server(sock, message, true);
 
     if (strcmp(response, "failed") == 0) {
         printf("Username already exists...\n");
@@ -103,7 +113,7 @@ bool register_user(int sock, user_t *user) {
 }
 
 void list_users(int sock) {
-    char *response = message_server(sock, "list");
+    char *response = message_server(sock, "list", true);
     printf("Online members:\n");
     printf("%s\n", response);
     sleep(3);
@@ -112,13 +122,48 @@ void list_users(int sock) {
 bool delete_user(int sock, user_t *user) {
     char message[BUFFER_SIZE];
     sprintf(message, "delete:%s:%s", user->username, user->password);
-    char *response = message_server(sock, message);
+    char *response = message_server(sock, message, true);
     if (!strcmp(response, "success") == 0) {
         printf("An error occurred\n");
         sleep(3);
         return false;
     }
     return true;
+}
+
+void send_message(int sock, user_t *user, char *input) {
+    char message[BUFFER_SIZE];
+    sprintf(message, "message:%s:%s", user->username, input);
+    message_server(sock, message, false);
+}
+
+void print_message(char *message) {
+    ssize_t num_written = write(pipe_fd, message, strlen(message));
+    if (num_written == -1) {
+        perror("write");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void *receive_message(void *arg) {
+    int sock = *(int *)arg;
+    char buffer[BUFFER_SIZE];
+    while (1) {
+        sleep(1);
+        read(sock, buffer, BUFFER_SIZE);
+        char *parts[3];
+        char *part = strtok(buffer, ":");
+        int i = 0;
+        while (part != NULL) {
+            parts[i++] = part;
+            part = strtok(NULL, ":");
+        }
+        if (strcmp(parts[0], "message") == 0) {
+            char message[BUFFER_SIZE];
+            sprintf(message, "%s: %s", parts[1], parts[2]);
+            print_message(message);
+        }
+    }
 }
 
 void login_menu(int sock, user_t *user) {
@@ -182,6 +227,7 @@ void main_menu(int *pipe_fd, int sock, user_t *user) {
         } else if (strncmp(input, "/logout", 7) == 0) {
             is_logged_in = false;
         } else {
+            send_message(sock, user, input);
         }
 
         memset(input, 0, sizeof(input));
@@ -221,14 +267,13 @@ int main(int argc, char *argv[]) {
 
     char *communication_ip = argv[1];
     int communication_port = atoi(argv[2]);
-    // char *communication_ip = "127.0.1.1";
-    // int communication_port = 5008;
 
     printf("communication\t%s:%d\n", communication_ip, communication_port);
 
     user_t *user = malloc(sizeof(user_t));
-    int pipe_fd;
     int communication_sock;
+
+    sem_init(&sem, 0, 1);
 
     mkfifo(PIPE_PATH, 0666);
     system("gnome-terminal -- ./display.o");
@@ -239,6 +284,13 @@ int main(int argc, char *argv[]) {
     }
 
     connect_server(&communication_sock, communication_ip, communication_port);
+
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, receive_message, &communication_sock) !=
+        0) {
+        perror("pthread_create");
+        exit(EXIT_FAILURE);
+    }
 
     login_menu(communication_sock, user);
 

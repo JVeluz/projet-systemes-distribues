@@ -10,23 +10,31 @@
 #define PIPE_PATH "./pipe"
 
 int main() {
-    int fd = open(PIPE_PATH, O_RDONLY);
+    char buffer[BUFFER_SIZE];
+    int fd;
+
+    fd = open(PIPE_PATH, O_RDONLY);
     if (fd == -1) {
         perror("open");
         exit(EXIT_FAILURE);
     }
 
-    char buffer[BUFFER_SIZE];
-    while (true) {
-        read(fd, buffer, sizeof(buffer));
-        printf("%s\n", buffer);
-
-        if (strncmp(buffer, "/exit", 5) == 0)
+    while (1) {
+        ssize_t num_read = read(fd, buffer, BUFFER_SIZE);
+        if (num_read > 0) {
+            buffer[num_read] = '\0';
+            if (buffer[0] == '\0')
+                continue;
+            printf("%s\n", buffer);
+        } else if (num_read == 0) {
             break;
+        } else {
+            perror("read");
+            break;
+        }
+        fflush(stdout);
     }
 
     close(fd);
-    unlink(PIPE_PATH);
-
     return 0;
 }
