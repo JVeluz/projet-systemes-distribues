@@ -82,17 +82,26 @@ int get_shm_id() {
     return shm_id;
 }
 
+void decode_response(char *response, char *parts[3]) {
+    char *part = strtok(response, ":");
+    int i = 0;
+    while (part != NULL) {
+        parts[i++] = part;
+        part = strtok(NULL, ":");
+    }
+}
+
 void broadcast(char *message) {
-    int shm_id;
     users_list_t *users_list;
+    int shm_id;
 
     // Get the shared memory
     shm_id = get_shm_id();
 
     // Get the users list
-    users_list = shmat(shm_id, NULL, 0);
-    if (users_list == (void *)-1) {
-        perror("broadcast:shmat");
+    users_list = (users_list_t *)shmat(shm_id, NULL, 0);
+    if (users_list == (users_list_t *)-1) {
+        perror("handle_client:shmat");
         exit(EXIT_FAILURE);
     }
 
@@ -123,18 +132,21 @@ void *handle_client(void *arg) {
     printf("communication: client-%d connected\n", id);
 
     while (running) {
+        // Clear the buffer
+        memset(buffer, 0, BUFFER_SIZE);
+
         // Receive the message from the client
         n_bytes = read(*sock, buffer, BUFFER_SIZE);
-        // Check if the client is disready
-        if (n_bytes == 0) {
+        if (n_bytes == 0)
             break;
-        }
+
         printf("\n");
-        printf("communication: <-- %s client-%d\n", buffer, id);
         message = malloc(n_bytes * sizeof(char));
         strcpy(message, buffer);
+        printf("communication: <-- %s client-%d\n", message, id);
 
-        if (strncmp(message, "message:", 8) == 0) {
+        // Check if the message is a broadcasts
+        if (strncmp(message, "broadcast:", 8) == 0) {
             broadcast(message);
             free(message);
             continue;
@@ -164,11 +176,10 @@ void *handle_client(void *arg) {
         free(response);
     }
 
-    close(*sock);
-    free(args);
-
     printf("\n");
     printf("communication: client-%d exit\n", id);
+
+    close(*sock);
 
     pthread_exit(NULL);
 }
@@ -193,8 +204,8 @@ void communicaiton(int port) {
     shm_id = get_shm_id();
 
     // Get the users list
-    users_list = shmat(shm_id, NULL, 0);
-    if (users_list == (void *)-1) {
+    users_list = (users_list_t *)shmat(shm_id, NULL, 0);
+    if (users_list == (users_list_t *)-1) {
         perror("handle_client:shmat");
         exit(EXIT_FAILURE);
     }
@@ -233,6 +244,7 @@ void communicaiton(int port) {
     printf("communication: ready\n");
 
     n_clients = 0;
+    users_list->size = 0;
     while (running) {
         client_threads =
             realloc(client_threads, (n_clients + 1) * sizeof(pthread_t));
@@ -267,6 +279,7 @@ void communicaiton(int port) {
         }
         pthread_detach(client_threads[n_clients]);
 
+        // Add the client to the users list
         users_list->users =
             realloc(users_list->users, (users_list->size + 1) * sizeof(user_t));
         users_list->users[users_list->size].username = "client";
@@ -275,24 +288,20 @@ void communicaiton(int port) {
 
         n_clients++;
     }
-    printf("communication: exit\n");
+    // printf("communication: exit\n");
 
-    // Wait for the client threads
-    for (int i = 0; i < n_clients; i++) {
-        pthread_join(client_threads[i], NULL);
-    }
+    // // Wait for the client threads
+    // for (int i = 0; i < n_clients; i++)
+    //     pthread_join(client_threads[i], NULL);
 
-    // Close the sockets
-    close(sock_communication);
+    // // Destroy the semaphore
+    // sem_destroy(&mutex_client);
 
-    // Destroy the semaphore
-    sem_destroy(&mutex_client);
+    // // Free the memory
+    // free(sock_clients);
+    // free(client_threads);
 
-    // Free the memory
-    free(sock_clients);
-    free(client_threads);
-
-    exit(EXIT_SUCCESS);
+    // exit(EXIT_SUCCESS);
 }
 
 void gestion_requete(char *ip, int port) {
@@ -351,6 +360,7 @@ void gestion_requete(char *ip, int port) {
         }
 
         // Receive the response from the client RMI
+        addr_size = sizeof(addr_server);
         n_bytes = recvfrom(sock_gestion_requete, buffer, BUFFER_SIZE, 0,
                            (struct sockaddr *)&addr_server, &addr_size);
         if (n_bytes == -1) {
@@ -371,12 +381,6 @@ void gestion_requete(char *ip, int port) {
         free(response);
         free(message);
     }
-    printf("gestion-requete: exit\n");
-
-    // Close the socket
-    close(sock_gestion_requete);
-
-    exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[]) {
@@ -408,12 +412,15 @@ int main(int argc, char *argv[]) {
     pid_t pid_communication;
 
     users_list_t users_list;
-    users_list.size = 0;
 
     key_t msg_key;
     key_t shm_key;
     int msg_id;
     int shm_id;
+
+    // Initialize the users list
+    users_list.size = 0;
+    users_list.users = NULL;
 
     // Initialize the file message
     system("touch msg");
@@ -443,6 +450,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    printf("Main: ready\n");
+
     // Launch the processes
     pid_client_rmi = fork();
     if (pid_client_rmi == -1) {
@@ -452,7 +461,7 @@ int main(int argc, char *argv[]) {
         execlp("java", "java", "-jar", "client-rmi/client-rmi.jar",
                gestion_compte_ip, argv[2], argv[3], NULL);
     }
-    sleep(1);
+    usleep(100);
     pid_gestion_requete = fork();
     if (pid_gestion_requete == -1) {
         perror("fork");
@@ -460,7 +469,7 @@ int main(int argc, char *argv[]) {
     } else if (pid_gestion_requete == 0) {
         gestion_requete("localhost", client_rmi_port);
     }
-    sleep(1);
+    usleep(100);
     pid_communication = fork();
     if (pid_communication == -1) {
         perror("fork");
@@ -493,6 +502,8 @@ int main(int argc, char *argv[]) {
 
     // Free the memory
     free(users_list.users);
+
+    printf("Main: exit\n");
 
     exit(EXIT_SUCCESS);
 }

@@ -3,6 +3,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,165 +14,167 @@
 
 #define BUFFER_SIZE 256
 #define PIPE_PATH "./pipe"
+#define MAX_USERNAME_LENGTH 32
 
 typedef struct {
-    char *username;
-    char *password;
+    char username[MAX_USERNAME_LENGTH];
 } user_t;
 
-sem_t sem;
+user_t *user;
 
+int sock;
 int pipe_fd;
 
-char *message_server(int sock, char *message, bool read_response) {
-    char *response;
-    char nb_octets;
-
-    sem_wait(&sem);
-    response = malloc(BUFFER_SIZE);
-    nb_octets = write(sock, message, strlen(message) + 1);
-    if (nb_octets == -1) {
+void write_to_pipe(char *message) {
+    if (write(pipe_fd, message, strlen(message)) == -1) {
         perror("write");
-        sleep(3);
         exit(EXIT_FAILURE);
     }
-    if (nb_octets == 0) {
-        printf("Server disconnected\n");
-        sleep(3);
+}
+
+void write_to_server(char *message) {
+    if (write(sock, message, strlen(message)) == -1) {
+        perror("write");
         exit(EXIT_FAILURE);
     }
-    if (!read_response) {
-        sem_post(&sem);
-        return NULL;
+}
+void read_from_server(char *response) {
+    if (read(sock, response, BUFFER_SIZE) == -1) {
+        perror("read");
+        exit(EXIT_FAILURE);
     }
-    read(sock, response, BUFFER_SIZE);
-    sem_post(&sem);
-    return response;
 }
 
-bool login_user(int sock, user_t *user) {
-    char buffer[BUFFER_SIZE];
+void decode_response(char *response, char *parts[3]) {
+    char *part = strtok(response, ":");
+    int i = 0;
+    while (part != NULL) {
+        parts[i++] = part;
+        part = strtok(NULL, ":");
+    }
+}
 
-    printf("Enter username: ");
-    fgets(buffer, sizeof(buffer), stdin);
-    buffer[strcspn(buffer, "\n")] = 0;
-    user->username = malloc(strlen(buffer) + 1);
-    strcpy(user->username, buffer);
+void *handle_server_listen() {
+    char server_response[BUFFER_SIZE];
+    char pipe_message[BUFFER_SIZE];
+    char *parts[3];
+    while (true) {
+        read_from_server(server_response);
+        decode_response(server_response, parts);
+        if (strcmp(parts[0], "broadcast") == 0) {
+            sprintf(pipe_message, "%s: %s", parts[1], parts[2]);
+            write_to_pipe(pipe_message);
+        }
+    }
+}
 
-    printf("Enter password: ");
-    fgets(buffer, sizeof(buffer), stdin);
-    buffer[strcspn(buffer, "\n")] = 0;
-    user->password = malloc(strlen(buffer) + 1);
-    strcpy(user->password, buffer);
+bool login_request(char *username, char *password) {
+    char request[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
 
-    char message[BUFFER_SIZE];
-    sprintf(message, "login:%s:%s", user->username, user->password);
+    sprintf(request, "login:%s:%s", username, password);
+    write_to_server(request);
+    read_from_server(response);
 
-    char *response = message_server(sock, message, true);
-    if (strcmp(response, "failed") == 0) {
-        printf("Invalid username or password...\n");
-        sleep(3);
-        return false;
-    } else if (strcmp(response, "success") == 0) {
+    if (strcmp(response, "success") == 0) {
+        strcpy(user->username, username);
         return true;
-    }
-    printf("An error occurred: %s\n", response);
-    sleep(3);
-    return false;
-}
-
-bool register_user(int sock, user_t *user) {
-    char buffer[BUFFER_SIZE];
-
-    printf("Enter username: ");
-    fgets(buffer, sizeof(buffer), stdin);
-    buffer[strcspn(buffer, "\n")] = 0;
-    user->username = malloc(strlen(buffer) + 1);
-    strcpy(user->username, buffer);
-
-    printf("Enter password: ");
-    fgets(buffer, sizeof(buffer), stdin);
-    buffer[strcspn(buffer, "\n")] = 0;
-    user->password = malloc(strlen(buffer) + 1);
-    strcpy(user->password, buffer);
-
-    char message[BUFFER_SIZE];
-    sprintf(message, "register:%s:%s", user->username, user->password);
-
-    char *response = message_server(sock, message, true);
-
-    if (strcmp(response, "failed") == 0) {
-        printf("Username already exists...\n");
-        sleep(3);
+    } else if (strcmp(response, "failed") == 0) {
+        printf("Wrong username or password\n");
         return false;
-    } else if (strcmp(response, "success") == 0) {
-        return true;
-    }
-    printf("An error occurred\n");
-    sleep(3);
-    return false;
-}
-
-void list_users(int sock) {
-    char *response = message_server(sock, "list", true);
-    printf("Online members:\n");
-    printf("%s\n", response);
-    sleep(3);
-}
-
-bool delete_user(int sock, user_t *user) {
-    char message[BUFFER_SIZE];
-    sprintf(message, "delete:%s:%s", user->username, user->password);
-    char *response = message_server(sock, message, true);
-    if (!strcmp(response, "success") == 0) {
+    } else {
         printf("An error occurred\n");
-        sleep(3);
         return false;
     }
-    return true;
 }
 
-void send_message(int sock, user_t *user, char *input) {
-    char message[BUFFER_SIZE];
-    sprintf(message, "message:%s:%s", user->username, input);
-    message_server(sock, message, false);
-}
+bool register_request(char *username, char *password) {
+    char request[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
 
-void print_message(char *message) {
-    ssize_t num_written = write(pipe_fd, message, strlen(message));
-    if (num_written == -1) {
-        perror("write");
-        exit(EXIT_FAILURE);
+    sprintf(request, "register:%s:%s", username, password);
+    write_to_server(request);
+    read_from_server(response);
+
+    if (strcmp(response, "success") == 0) {
+        printf("Registered successfully\n");
+        return true;
+    } else if (strcmp(response, "failed") == 0) {
+        printf("Username already exists\n");
+        return false;
+    } else {
+        printf("An error occurred\n");
+        return false;
     }
 }
 
-void *receive_message(void *arg) {
-    int sock = *(int *)arg;
-    char buffer[BUFFER_SIZE];
-    while (1) {
-        sleep(1);
-        read(sock, buffer, BUFFER_SIZE);
-        char *parts[3];
-        char *part = strtok(buffer, ":");
-        int i = 0;
-        while (part != NULL) {
-            parts[i++] = part;
-            part = strtok(NULL, ":");
-        }
-        if (strcmp(parts[0], "message") == 0) {
-            char message[BUFFER_SIZE];
-            sprintf(message, "%s: %s", parts[1], parts[2]);
-            print_message(message);
-        }
+bool delete_request(char *username, char *password) {
+    char request[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    sprintf(request, "delete:%s:%s", username, password);
+    write_to_server(request);
+    read_from_server(response);
+
+    if (strcmp(response, "success") == 0) {
+        return true;
+    } else if (strcmp(response, "failed") == 0) {
+        printf("Wrong username or password\n");
+        return false;
+    } else {
+        printf("An error occurred\n");
+        return false;
     }
 }
 
-void login_menu(int sock, user_t *user) {
+void list_request() {
+    char request[BUFFER_SIZE];
+    char response[BUFFER_SIZE];
+
+    sprintf(request, "list");
+    write_to_server(request);
+    read_from_server(response);
+
+    char *parts[3];
+    decode_response(response, parts);
+    if (strcmp(parts[0], "list") == 0) {
+        printf("Online members:\n");
+        char *member = strtok(parts[1], ",");
+        while (member != NULL) {
+            printf("%s\n", member);
+            member = strtok(NULL, ",");
+        }
+    } else {
+        printf("An error occurred\n");
+    }
+}
+
+void logout_request() {
+    char request[BUFFER_SIZE];
+    sprintf(request, "logout:%s", user->username);
+    write_to_server(request);
+}
+
+void broadcast_request(char *message) {
+    char request[BUFFER_SIZE];
+    sprintf(request, "broadcast:%s:%s", user->username, message);
+    write_to_server(request);
+}
+
+void ask_for(char *question, char *answer) {
+    printf("%s: ", question);
+    fgets(answer, MAX_USERNAME_LENGTH, stdin);
+    answer[strcspn(answer, "\n")] = 0;
+}
+
+void login_menu() {
+    char username[MAX_USERNAME_LENGTH];
+    char password[MAX_USERNAME_LENGTH];
+
     int option;
     bool is_logged_in = false;
     do {
         system("clear");
-
         printf("1. Login\n");
         printf("2. Register\n");
         printf("3. Exit\n");
@@ -179,16 +182,20 @@ void login_menu(int sock, user_t *user) {
 
         scanf("%d", &option);
 
-        // clear buffer
+        // clear input
         while ((getchar()) != '\n')
             ;
 
         switch (option) {
         case 1:
-            is_logged_in = login_user(sock, user);
+            ask_for("Username", username);
+            ask_for("Password", password);
+            is_logged_in = login_request(username, password);
             break;
         case 2:
-            is_logged_in = register_user(sock, user);
+            ask_for("Username", username);
+            ask_for("Password", password);
+            register_request(username, password);
             break;
         case 3:
             exit(EXIT_SUCCESS);
@@ -197,14 +204,13 @@ void login_menu(int sock, user_t *user) {
             printf("Invalid option\n");
             break;
         }
-
         sleep(1);
     } while (!is_logged_in);
 }
 
-void main_menu(int *pipe_fd, int sock, user_t *user) {
+void main_menu() {
     bool is_logged_in = true;
-    char buffer[BUFFER_SIZE];
+    char input[BUFFER_SIZE];
     do {
         system("clear");
         printf("/list\tList all online members\n");
@@ -213,50 +219,24 @@ void main_menu(int *pipe_fd, int sock, user_t *user) {
         printf("\n");
 
         printf("%s: ", user->username);
-        fgets(buffer, sizeof(buffer), stdin);
-        buffer[strcspn(buffer, "\n")] = 0;
-
-        char input[BUFFER_SIZE];
-        strcpy(input, buffer);
+        fgets(input, sizeof(input), stdin);
+        input[strcspn(input, "\n")] = 0;
 
         if (strncmp(input, "/list", 5) == 0) {
-            list_users(sock);
+            list_request();
         } else if (strncmp(input, "/delete", 7) == 0) {
-            delete_user(sock, user);
-            is_logged_in = false;
+            char password[MAX_USERNAME_LENGTH];
+            ask_for("Password", password);
+            if (delete_request(user->username, password)) {
+                is_logged_in = false;
+            }
         } else if (strncmp(input, "/logout", 7) == 0) {
+            logout_request();
             is_logged_in = false;
         } else {
-            send_message(sock, user, input);
+            broadcast_request(input);
         }
-
-        memset(input, 0, sizeof(input));
-
-        sleep(1);
     } while (is_logged_in);
-
-    printf("Exiting...\n");
-
-    sleep(3);
-}
-
-void connect_server(int *sock, char *ip, int port) {
-    struct sockaddr_in server;
-    struct hostent *host;
-
-    host = gethostbyname(ip);
-    *sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (*sock == -1) {
-        perror("socket");
-        exit(EXIT_FAILURE);
-    }
-    server.sin_family = AF_INET;
-    server.sin_port = htons(port);
-    server.sin_addr.s_addr = *((in_addr_t *)host->h_addr_list[0]);
-    if (connect(*sock, (struct sockaddr *)&server, sizeof(server)) == -1) {
-        perror("connect");
-        exit(EXIT_FAILURE);
-    }
 }
 
 int main(int argc, char *argv[]) {
@@ -270,11 +250,39 @@ int main(int argc, char *argv[]) {
 
     printf("communication\t%s:%d\n", communication_ip, communication_port);
 
-    user_t *user = malloc(sizeof(user_t));
-    int communication_sock;
+    struct sockaddr_in server_addr;
+    struct hostent *server;
+    pthread_t thread_server_listen;
 
-    sem_init(&sem, 0, 1);
+    // Initialize user
+    user = malloc(sizeof(user_t));
 
+    // Create socket
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == -1) {
+        perror("socket");
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize server address
+    server = gethostbyname(communication_ip);
+    if (server == NULL) {
+        perror("gethostbyname");
+        exit(EXIT_FAILURE);
+    }
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(communication_port);
+    server_addr.sin_addr = *((struct in_addr *)server->h_addr_list[0]);
+    memset(server_addr.sin_zero, 0, sizeof(server_addr.sin_zero));
+
+    // Connect to server
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) ==
+        -1) {
+        perror("connect");
+        exit(EXIT_FAILURE);
+    }
+
+    // Create pipe
     mkfifo(PIPE_PATH, 0666);
     system("gnome-terminal -- ./display.o");
     pipe_fd = open(PIPE_PATH, O_WRONLY);
@@ -283,23 +291,25 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    connect_server(&communication_sock, communication_ip, communication_port);
+    login_menu();
 
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, receive_message, &communication_sock) !=
-        0) {
+    // Create thread to listen to server
+    if (pthread_create(&thread_server_listen, NULL, handle_server_listen,
+                       NULL) != 0) {
         perror("pthread_create");
         exit(EXIT_FAILURE);
     }
 
-    login_menu(communication_sock, user);
+    main_menu();
 
-    main_menu(&pipe_fd, communication_sock, user);
-
+    // Close pipe
     close(pipe_fd);
     unlink(PIPE_PATH);
-    close(communication_sock);
 
+    // Close socket
+    close(sock);
+
+    // Free memory
     free(user);
 
     return 0;
